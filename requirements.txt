@@ -1,0 +1,16 @@
+streamlit
+faiss-cpu
+numpy
+python-dotenv
+langchain
+langchain-core
+langchain-groq
+langchain-huggingface
+langchain-text-splitters
+langchain-docling
+sentence-transformers
+torch
+pypdfium2
+docling_parse
+docling_ibm_models
+opencv-python
