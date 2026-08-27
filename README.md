@@ -53,7 +53,7 @@ Hugging Face Embeddings
 - 🧩 Recursive document chunking
 - 🧠 Hugging Face BGE embeddings
 - ⚡ Native FAISS vector search
-- 🤖 Groq-hosted GPT-OSS 20B
+- 🤖 Groq
 - 📚 Top-K relevant document retrieval
 - 🎯 Context-grounded responses
 - ⏱️ Response-time measurement
