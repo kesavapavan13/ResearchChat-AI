@@ -1,319 +1,148 @@
-import streamlit as st
 import os
 import time
-import faiss
-import numpy as np
+import streamlit as st
 
 from dotenv import load_dotenv
 
-from langchain_groq import ChatGroq
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.prompts import ChatPromptTemplate
-
-from langchain_docling.loader import DoclingLoader
-
+from RAG_CHAIN.document_processor import DocumentProcessor
+from RAG_CHAIN.retriever import DenseRetriever, SparseRetriever, HybridRetriever
+from RAG_CHAIN.llm import build_llm, RAG_PROMPT
 
 load_dotenv()
 
-
-groq_api_key = os.getenv("GROQ_API_KEY")
-
-if not groq_api_key:
-    st.error("GROQ API key is missing! Please check your .env file.")
-    st.stop()
-
-os.environ["GROQ_API_KEY"] = groq_api_key
+st.set_page_config(page_title="ResearchChat-AI", page_icon="📄")
+st.title("ResearchChat-AI")
+st.caption("Hybrid RAG (Dense + Sparse) — Chat with your research papers")
 
 
-llm = ChatGroq(
-    api_key=groq_api_key,
-    model_name="openai/gpt-oss-20b"
-)
+# ---------------------------------------------------------------------
+# HybridRAGChain — ties retrieval + LLM together (previously rag_chain.py)
+# ---------------------------------------------------------------------
+class HybridRAGChain:
+    def __init__(self):
+        self.processor = DocumentProcessor()
+        self.llm = build_llm()
 
+        self.dense_retriever: DenseRetriever | None = None
+        self.sparse_retriever: SparseRetriever | None = None
+        self.hybrid_retriever: HybridRetriever | None = None
+        self.documents: list | None = None
 
-prompt = ChatPromptTemplate.from_template(
-    """
-    Answer the questions based on the provided context only.
+    @property
+    def is_ready(self) -> bool:
+        return self.hybrid_retriever is not None
 
-    Please provide the most accurate response based on the question.
-    Make sure to give a complete and easy-to-understand answer.
-
-    <context>
-    {context}
-    </context>
-
-    Question: {input}
-    """
-)
-
-
-def create_vector_embedding(directory_path):
-
-    try:
-
-        st.session_state.embeddings = HuggingFaceEmbeddings(
-            model_name="BAAI/bge-small-en"
+    def build_index(self, directory_path: str) -> int:
+        """
+        Runs the full document -> chunks -> embeddings -> index pipeline.
+        Returns the number of vectors indexed.
+        """
+        final_documents, document_embeddings = self.processor.process_directory(
+            directory_path
         )
 
-
-        if not os.path.exists(directory_path):
-            st.error(
-                f"Directory `{directory_path}` does not exist."
-            )
-            return
-
-
-        pdf_files = [
-            os.path.join(directory_path, file)
-            for file in os.listdir(directory_path)
-            if file.lower().endswith(".pdf")
-        ]
-
-
-        if not pdf_files:
-            st.error("No PDF files found.")
-            return
-
-
-        loader = DoclingLoader(
-            file_path=pdf_files
+        self.documents = final_documents
+        self.dense_retriever = DenseRetriever(document_embeddings, final_documents)
+        self.sparse_retriever = SparseRetriever(final_documents)
+        self.hybrid_retriever = HybridRetriever(
+            self.dense_retriever, self.sparse_retriever
         )
 
-
-        st.session_state.docs = loader.load()
-
-
-        if not st.session_state.docs:
-            st.error("No documents were loaded.")
-            return
-
-
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,
-            chunk_overlap=300
-        )
-
-
-        st.session_state.final_documents = (
-            text_splitter.split_documents(
-                st.session_state.docs[:50]
-            )
-        )
-
-
-        if not st.session_state.final_documents:
-            st.error("Failed to split documents.")
-            return
-
-
-        doc_texts = [
-            doc.page_content
-            for doc in st.session_state.final_documents
-        ]
-
-
-        document_embeddings = (
-            st.session_state.embeddings.embed_documents(
-                doc_texts
-            )
-        )
-
-
-        if not document_embeddings:
-            st.error("Embeddings were not generated.")
-            return
-
-
-        document_embeddings = np.array(
-            document_embeddings,
-            dtype="float32"
-        )
-
-
-        dimension = document_embeddings.shape[1]
-
-
-        index = faiss.IndexFlatL2(dimension)
-
-
-        index.add(document_embeddings)
-
-
-        st.session_state.vectors = index
-
-        st.session_state.vector_documents = (
-            st.session_state.final_documents
-        )
-
-
-        st.success(
-            f"Vector database initialized successfully. "
-            f"{index.ntotal} vectors indexed."
-        )
-
-
-    except Exception as e:
-
-        st.error(
-            f"Error during vector initialization: {e}"
-        )
-
-
-def retrieve_documents(query, k=4):
-
-    query_embedding = (
-        st.session_state.embeddings.embed_query(
-            query
-        )
-    )
-
-
-    query_embedding = np.array(
-        [query_embedding],
-        dtype="float32"
-    )
-
-
-    distances, indices = (
-        st.session_state.vectors.search(
-            query_embedding,
-            k
-        )
-    )
-
-
-    documents = []
-
-
-    for index in indices[0]:
-
-        if index == -1:
-            continue
-
-        documents.append(
-            st.session_state.vector_documents[index]
-        )
-
-
-    return documents
-
-
-uploaded_files = st.file_uploader(
-    "Upload PDF files",
-    type=["pdf"],
-    accept_multiple_files=True
-)
-
-
-directory_path = os.path.join(
-    os.getcwd(),
-    "research_papers"
-)
-
-
-if uploaded_files:
-
-    if not os.path.exists(directory_path):
-        os.makedirs(directory_path)
-
-
-    for uploaded_file in uploaded_files:
-
-        file_path = os.path.join(
-            directory_path,
-            uploaded_file.name
-        )
-
-
-        with open(file_path, "wb") as f:
-            f.write(
-                uploaded_file.getbuffer()
-            )
-
-
-    st.success(
-        f"Uploaded {len(uploaded_files)} file(s) successfully!"
-    )
-
-
-if st.button("Document Embedding"):
-
-    create_vector_embedding(
-        directory_path
-    )
-
-
-user_prompt = st.text_input(
-    "Enter your query from the research paper"
-)
-
-
-if user_prompt:
-
-    if "vectors" in st.session_state:
+        return self.dense_retriever.ntotal
+
+    def query(self, user_prompt: str, k: int = 4) -> dict:
+        """
+        Runs retrieval + LLM generation for a single query.
+        Returns a dict with the answer, retrieved docs, and elapsed time.
+        """
+        if not self.is_ready:
+            raise RuntimeError("Index has not been built yet. Call build_index() first.")
 
         start_time = time.time()
 
+        query_embedding = self.processor.embed_query(user_prompt)
 
-        retrieved_documents = retrieve_documents(
-            user_prompt,
-            k=4
+        retrieved_documents = self.hybrid_retriever.search(
+            query=user_prompt,
+            query_embedding=query_embedding,
+            k=k,
         )
 
+        context = "\n\n".join(doc.page_content for doc in retrieved_documents)
 
-        context = "\n\n".join(
-            doc.page_content
-            for doc in retrieved_documents
+        response = self.llm.invoke(
+            RAG_PROMPT.format(context=context, input=user_prompt)
         )
 
+        elapsed_time = time.time() - start_time
 
-        response = llm.invoke(
-            prompt.format(
-                context=context,
-                input=user_prompt
-            )
-        )
-
-
-        end_time = time.time()
+        return {
+            "answer": response.content,
+            "retrieved_documents": retrieved_documents,
+            "elapsed_time": elapsed_time,
+        }
 
 
-        st.write(
-            f"Response time: "
-            f"{end_time - start_time:.2f} seconds"
-        )
+# ---------------------------------------------------------------------
+# Streamlit UI
+# ---------------------------------------------------------------------
+
+# ---- Initialize the RAG chain once per session ----
+if "rag_chain" not in st.session_state:
+    try:
+        st.session_state.rag_chain = HybridRAGChain()
+    except EnvironmentError as e:
+        st.error(str(e))
+        st.stop()
 
 
-        st.write(
-            response.content
-        )
+directory_path = os.path.join(os.getcwd(), "research_papers")
 
 
-        with st.expander(
-            "Document similarity search"
-        ):
+# ---- File upload ----
+uploaded_files = st.file_uploader(
+    "Upload PDF files",
+    type=["pdf"],
+    accept_multiple_files=True,
+)
 
-            for i, doc in enumerate(
-                retrieved_documents
-            ):
+if uploaded_files:
+    os.makedirs(directory_path, exist_ok=True)
 
-                st.write(
-                    f"### Document {i + 1}"
-                )
+    for uploaded_file in uploaded_files:
+        file_path = os.path.join(directory_path, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
 
-                st.write(
-                    doc.page_content
-                )
-
-                st.write(
-                    "-------------------"
-                )
+    st.success(f"Uploaded {len(uploaded_files)} file(s) successfully!")
 
 
+# ---- Build index ----
+if st.button("Document Embedding"):
+    with st.spinner("Building hybrid index (FAISS + BM25)..."):
+        try:
+            n_vectors = st.session_state.rag_chain.build_index(directory_path)
+            st.success(f"Vector database initialized successfully. {n_vectors} vectors indexed.")
+        except (FileNotFoundError, ValueError) as e:
+            st.error(str(e))
+
+
+# ---- Query ----
+user_prompt = st.text_input("Enter your query from the research paper")
+
+if user_prompt:
+    if st.session_state.rag_chain.is_ready:
+        result = st.session_state.rag_chain.query(user_prompt, k=4)
+
+        st.write(f"Response time: {result['elapsed_time']:.2f} seconds")
+        st.write(result["answer"])
+
+        with st.expander("Document similarity search"):
+            for i, doc in enumerate(result["retrieved_documents"]):
+                st.write(f"### Document {i + 1}")
+                st.write(doc.page_content)
+                st.write("-------------------")
     else:
-
         st.warning(
-            "Vector database is not initialized. "
-            "Please click 'Document Embedding' first."
+            "Vector database is not initialized. Please click 'Document Embedding' first."
         )
