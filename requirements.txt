@@ -16,3 +16,4 @@ langchain-text-splitters
 langchain-core
 langchain-docling
 opencv-python-headless
+opencv-python-headless
