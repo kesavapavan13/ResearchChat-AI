@@ -4,7 +4,6 @@ torch
 pypdfium2
 docling_parse
 docling_ibm_models
-opencv-python
 streamlit
 python-dotenv
 faiss-cpu
